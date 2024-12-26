@@ -21,8 +21,12 @@ public class WMDatabase {
 
     public static Map<String, WMDatabase> INSTANCES = new HashMap<>();
 
-    public static WMDatabase getInstance(String name, Context context, String encryptionKey) {
-        return getInstance(name, context, encryptionKey, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+    public static WMDatabase getInstance(String name, Context context) {
+        return getInstance(name, context, null, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+    }
+
+    public static WMDatabase getInstance(String name, Context context, int openFlags) {
+        return getInstance(name, context, null, openFlags);
     }
 
     public static WMDatabase getInstance(String name, Context context, String encryptionKey, int openFlags) {
@@ -56,11 +60,22 @@ public class WMDatabase {
         // Initialize SQLCipher
         SQLiteDatabase.loadLibs(context);
         
-        // Open or create the encrypted database
-        SQLiteDatabase database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null, openFlags);
-        
-        // Configure SQLCipher settings
-        database.rawExecSQL(DEFAULT_CIPHER_SETTINGS);
+        SQLiteDatabase database;
+        if (encryptionKey != null && !encryptionKey.isEmpty()) {
+            // Open or create encrypted database
+            database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null);
+            // Configure SQLCipher settings
+            database.execSQL(DEFAULT_CIPHER_SETTINGS);
+        } else {
+            // Open or create unencrypted database
+            database = SQLiteDatabase.openOrCreateDatabase(path, null);
+        }
+
+        if (openFlags != 0) {
+            if ((openFlags & SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) != 0) {
+                database.enableWriteAheadLogging();
+            }
+        }
         
         return database;
     }

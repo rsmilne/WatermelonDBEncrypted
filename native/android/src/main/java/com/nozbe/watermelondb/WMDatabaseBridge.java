@@ -44,7 +44,9 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     @ReactMethod
     public void initialize(String dbName, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
+                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
+                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
             int version = database.getUserVersion();
 
             if (version == 0) {
@@ -64,7 +66,9 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     @ReactMethod
     public void setUpWithSchema(String dbName, String schema, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
+                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
+                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
             database.unsafeExecuteStatements(schema);
             database.setUserVersion(schemaVersion);
             promise.resolve(true);
@@ -76,7 +80,9 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     @ReactMethod
     public void setUpWithMigrations(String dbName, ReadableArray migrations, int fromVersion, int toVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
+                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
+                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
             int databaseVersion = database.getUserVersion();
             if (databaseVersion != fromVersion) {
                 promise.reject("invalid_database_version",
