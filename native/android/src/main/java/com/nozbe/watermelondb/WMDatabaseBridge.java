@@ -15,10 +15,48 @@ import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.module.annotations.ReactModule;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Logger;
+
 @ReactModule(name = WMDatabaseBridge.NAME)
 public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     static final String NAME = "WMDatabaseBridge";
     private final ReactApplicationContext reactContext;
+    private final Map<Integer, Connection> connections = new HashMap<>();
+    private static final Logger logger = Logger.getLogger(WMDatabaseBridge.class.getName());
+
+    private static abstract class Connection {
+        WMDatabase database;
+        List<Runnable> queue;
+
+        Connection(WMDatabase database) {
+            this.database = database;
+            this.queue = new ArrayList<>();
+        }
+
+        List<Runnable> getQueue() {
+            return queue;
+        }
+    }
+
+    private static class ConnectedConnection extends Connection {
+        WMDatabaseDriver driver;
+
+        ConnectedConnection(WMDatabaseDriver driver) {
+            super(driver.getDatabase());
+            this.driver = driver;
+        }
+    }
+
+    private static class WaitingConnection extends Connection {
+        WaitingConnection(WMDatabase database, List<Runnable> queue) {
+            super(database);
+            this.queue = queue;
+        }
+    }
 
     public WMDatabaseBridge(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -153,13 +191,13 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
             if (connection == null) {
                 throw new Exception("No driver with tag " + tag + " available");
             }
-            if (connection instanceof Connection.Connected) {
-                String value = ((Connection.Connected) connection).driver.getLocal(key);
+            if (connection instanceof ConnectedConnection) {
+                String value = ((ConnectedConnection) connection).driver.getLocal(key);
                 WritableArray result = Arguments.createArray();
                 result.pushString("result");
                 result.pushString(value);
                 return result;
-            } else if (connection instanceof Connection.Waiting) {
+            } else if (connection instanceof WaitingConnection) {
                 throw new Exception("Waiting connection unexpected for unsafeGetLocalSynchronously");
             }
         } catch (Exception e) {
@@ -195,13 +233,13 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
             Connection connection = connections.get(tag);
             if (connection == null) {
                 promise.reject(new Exception("No driver with tag " + tag + " available"));
-            } else if (connection instanceof Connection.Connected) {
-                Object result = function.applyParamFunction(((Connection.Connected) connection).driver);
+            } else if (connection instanceof ConnectedConnection) {
+                Object result = function.applyParamFunction(((ConnectedConnection) connection).driver);
                 promise.resolve(result == Void.TYPE ? true : result);
-            } else if (connection instanceof Connection.Waiting) {
+            } else if (connection instanceof WaitingConnection) {
                 // try again when driver is ready
                 connection.getQueue().add(() -> withDriver(tag, promise, function, functionName));
-                connections.put(tag, new Connection.Waiting(connection.getQueue()));
+                connections.put(tag, new WaitingConnection(connection.database, connection.getQueue()));
             }
         } catch (Exception e) {
             promise.reject(functionName, e);
@@ -210,7 +248,7 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
 
     private void connectDriver(int connectionTag, WMDatabaseDriver driver, Promise promise) {
         List<Runnable> queue = getQueue(connectionTag);
-        connections.put(connectionTag, new Connection.Connected(driver));
+        connections.put(connectionTag, new ConnectedConnection(driver));
 
         for (Runnable operation : queue) {
             operation.run();
@@ -261,8 +299,8 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
 
     @Override
     public void invalidate() {
-        logger.info("Invalidating WMDatabaseBridge");
         try {
+            logger.info("Invalidating WMDatabaseBridge");
             // Close all database connections
             for (Connection connection : connections.values()) {
                 if (connection.database != null) {
@@ -270,51 +308,9 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
                 }
             }
             connections.clear();
-        }
-        super.invalidate();
-    }
-
-    private static class Connection {
-        final WMDatabase database;
-        final Schema schema;
-
-        Connection(WMDatabase database, Schema schema) {
-            this.database = database;
-            this.schema = schema;
+            super.invalidate();
+        } catch (Exception e) {
+            logger.severe("Error during invalidate: " + e.getMessage());
         }
     }
-
-    private static class Connection {
-        WMDatabase database;
-        Schema schema;
-        List<Runnable> queue;
-
-        Connection(WMDatabase database, Schema schema) {
-            this.database = database;
-            this.schema = schema;
-        }
-
-        List<Runnable> getQueue() {
-            return queue;
-        }
-    }
-
-    private static class Connection.Connected extends Connection {
-        WMDatabaseDriver driver;
-
-        Connection.Connected(WMDatabaseDriver driver) {
-            this.driver = driver;
-        }
-    }
-
-    private static class Connection.Waiting extends Connection {
-        List<Runnable> queue;
-
-        Connection.Waiting(List<Runnable> queue) {
-            this.queue = queue;
-        }
-    }
-
-    private final Map<Integer, Connection> connections = new HashMap<>();
-    private static final Logger logger = Logger.getLogger(WMDatabaseBridge.class.getName());
 }
