@@ -1,17 +1,21 @@
 // @flow
 
+import { type ResultCallback } from '../../../utils/common'
+import type { SQL } from '../index'
+import { logger } from '../../../utils/common'
+import { type SchemaVersion } from '../../../Schema'
+import type { SchemaMigrations } from '../../../Schema/migrations'
+
 import Database from './Database'
+import type { DispatcherType } from './dispatcher'
 
-function fixArgs(args: any[]): any[] {
-  return args.map((value) => {
-    if (typeof value === 'boolean') {
-      return value ? 1 : 0
-    }
-    return value
-  })
+export type SqliteDispatcher = DispatcherType<Database>
+
+type Migrations = {
+  from: SchemaVersion,
+  to: SchemaVersion,
+  sql: SQL,
 }
-
-type Migrations = { from: number, to: number, sql: string }
 
 class MigrationNeededError extends Error {
   databaseVersion: number
@@ -55,40 +59,66 @@ export function getPath(dbName: string): string {
   return path
 }
 
-class DatabaseDriver {
+export default class DatabaseDriver {
   static sharedMemoryConnections: { [dbName: string]: Database } = {}
 
   database: Database
 
   cachedRecords: any = {}
 
-  initialize(dbName: string, schemaVersion: number): void {
-    this.init(dbName)
+  initialize(dbName: string, schemaVersion: number, encryptionKey: ?string): void {
+    logger.log('[DB] Initializing DatabaseDriver')
+
+    this.init(dbName, encryptionKey)
+
+    logger.log('[DB] Checking schema version...')
     this.isCompatible(schemaVersion)
   }
 
-  setUpWithSchema(dbName: string, schema: string, schemaVersion: number): void {
-    this.init(dbName)
+  setUpWithSchema(dbName: string, schema: SQL, schemaVersion: number, encryptionKey: ?string): void {
+    logger.log('[DB] Setting up database with schema')
+
+    // TODO: Remove this check when CLI no longer generates schemas with semicolons
+    if (schema[schema.length - 1] === ';') {
+      logger.warn(
+        '[DB] Warning: Schema contains semicolon at the end. This is no longer necessary and will be removed in a future version of WatermelonDB',
+      )
+    }
+
+    this.init(dbName, encryptionKey)
     this.unsafeResetDatabase({ version: schemaVersion, sql: schema })
     this.isCompatible(schemaVersion)
   }
 
-  setUpWithMigrations(dbName: string, migrations: Migrations): void {
-    this.init(dbName)
+  setUpWithMigrations(dbName: string, migrations: Migrations, encryptionKey: ?string): void {
+    logger.log('[DB] Setting up database with migrations')
+
+    this.init(dbName, encryptionKey)
     this.migrate(migrations)
     this.isCompatible(migrations.to)
   }
 
-  init(dbName: string): void {
-    this.database = new Database(getPath(dbName))
-
-    const isSharedMemory = dbName.indexOf('mode=memory') > 0 && dbName.indexOf('cache=shared') > 0
-    if (isSharedMemory) {
-      if (!DatabaseDriver.sharedMemoryConnections[dbName]) {
-        DatabaseDriver.sharedMemoryConnections[dbName] = this.database
-      }
-      this.database = DatabaseDriver.sharedMemoryConnections[dbName]
+  init(dbName: string, encryptionKey: ?string): void {
+    if (this.database) {
+      return
     }
+
+    // Share database connection between multiple WatermelonDB instances
+    if (dbName.includes('?mode=memory') || dbName === ':memory:') {
+      const sharedMemoryConnection = DatabaseDriver.sharedMemoryConnections[dbName]
+      if (sharedMemoryConnection) {
+        logger.log('[DB] Reusing existing shared memory connection')
+        this.database = sharedMemoryConnection
+        return
+      }
+
+      logger.log('[DB] Creating new shared memory connection')
+      this.database = new Database(dbName, encryptionKey)
+      DatabaseDriver.sharedMemoryConnections[dbName] = this.database
+      return
+    }
+
+    this.database = new Database(dbName, encryptionKey)
   }
 
   find(table: string, id: string): any | null | string {
@@ -108,7 +138,7 @@ class DatabaseDriver {
   }
 
   cachedQuery(table: string, query: string, args: any[]): any[] {
-    const results = this.database.queryRaw(query, fixArgs(args))
+    const results = this.database.queryRaw(query, args)
     return results.map((row: any) => {
       const id = `${row.id}`
       if (this.isCached(table, id)) {
@@ -120,15 +150,15 @@ class DatabaseDriver {
   }
 
   queryIds(query: string, args: any[]): string[] {
-    return this.database.queryRaw(query, fixArgs(args)).map((row) => `${row.id}`)
+    return this.database.queryRaw(query, args).map((row) => `${row.id}`)
   }
 
   unsafeQueryRaw(query: string, args: any[]): any[] {
-    return this.database.queryRaw(query, fixArgs(args))
+    return this.database.queryRaw(query, args)
   }
 
   count(query: string, args: any[]): number {
-    return this.database.count(query, fixArgs(args))
+    return this.database.count(query, args)
   }
 
   batch(operations: any[]): void {
@@ -139,7 +169,7 @@ class DatabaseDriver {
       operations.forEach((operation: any[]) => {
         const [cacheBehavior, table, sql, argBatches] = operation
         argBatches.forEach((args) => {
-          this.database.execute(sql, fixArgs(args))
+          this.database.execute(sql, args)
           if (cacheBehavior === 1) {
             newIds.push([table, args[0]])
           } else if (cacheBehavior === -1) {
@@ -237,5 +267,3 @@ class DatabaseDriver {
     })
   }
 }
-
-export default DatabaseDriver

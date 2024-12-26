@@ -2,8 +2,8 @@ package com.nozbe.watermelondb;
 
 import android.content.Context;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteCursor;
-import android.database.sqlite.SQLiteDatabase;
+import net.sqlcipher.database.SQLiteDatabase;
+import net.sqlcipher.database.SQLiteCursor;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -13,6 +13,7 @@ import java.util.Map;
 
 public class WMDatabase {
     private final SQLiteDatabase db;
+    private static final String DEFAULT_CIPHER_SETTINGS = "PRAGMA cipher_compatibility = 4; PRAGMA kdf_iter = 64000; PRAGMA cipher_page_size = 4096;";
 
     private WMDatabase(SQLiteDatabase db) {
         this.db = db;
@@ -20,15 +21,15 @@ public class WMDatabase {
 
     public static Map<String, WMDatabase> INSTANCES = new HashMap<>();
 
-    public static WMDatabase getInstance(String name, Context context) {
-        return getInstance(name, context, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+    public static WMDatabase getInstance(String name, Context context, String encryptionKey) {
+        return getInstance(name, context, encryptionKey, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
     }
 
-    public static WMDatabase getInstance(String name, Context context, int openFlags) {
+    public static WMDatabase getInstance(String name, Context context, String encryptionKey, int openFlags) {
         synchronized (WMDatabase.class) {
             WMDatabase instance = INSTANCES.getOrDefault(name, null);
             if (instance == null || !instance.isOpen()) {
-                WMDatabase database = buildDatabase(name, context, openFlags);
+                WMDatabase database = buildDatabase(name, context, encryptionKey, openFlags);
                 INSTANCES.put(name, database);
                 return database;
             } else {
@@ -37,12 +38,12 @@ public class WMDatabase {
         }
     }
 
-    public static WMDatabase buildDatabase(String name, Context context, int openFlags) {
-        SQLiteDatabase sqLiteDatabase = WMDatabase.createSQLiteDatabase(name, context, openFlags);
+    public static WMDatabase buildDatabase(String name, Context context, String encryptionKey, int openFlags) {
+        SQLiteDatabase sqLiteDatabase = WMDatabase.createSQLiteDatabase(name, context, encryptionKey, openFlags);
         return new WMDatabase(sqLiteDatabase);
     }
 
-    private static SQLiteDatabase createSQLiteDatabase(String name, Context context, int openFlags) {
+    private static SQLiteDatabase createSQLiteDatabase(String name, Context context, String encryptionKey, int openFlags) {
         String path;
         if (name.equals(":memory:") || name.contains("mode=memory")) {
             context.getCacheDir().delete();
@@ -51,7 +52,17 @@ public class WMDatabase {
             // On some systems there is some kind of lock on `/databases` folder ¯\_(ツ)_/¯
             path = context.getDatabasePath("" + name + ".db").getPath().replace("/databases", "");
         }
-        return SQLiteDatabase.openDatabase(path, null, openFlags);
+
+        // Initialize SQLCipher
+        SQLiteDatabase.loadLibs(context);
+        
+        // Open or create the encrypted database
+        SQLiteDatabase database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null, openFlags);
+        
+        // Configure SQLCipher settings
+        database.rawExecSQL(DEFAULT_CIPHER_SETTINGS);
+        
+        return database;
     }
 
     public void setUserVersion(int version) {

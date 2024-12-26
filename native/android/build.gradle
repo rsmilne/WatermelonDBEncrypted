@@ -1,4 +1,3 @@
-
 buildscript {
     ext.getExtOrDefault = {name ->
         return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties['ReactNativeWatermelonDB_' + name]
@@ -34,11 +33,12 @@ android {
 
 dependencies {
     //noinspection GradleDynamicVersion
-    implementation 'com.facebook.react:react-native:+'
+    implementation "com.facebook.react:react-native:+"
+    implementation "net.zetetic:android-database-sqlcipher:4.5.3"
+    implementation "androidx.sqlite:sqlite:2.3.1"
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${getExtOrDefault('kotlinVersion')}"
 }
 
 repositories {
     mavenCentral()
 }
-

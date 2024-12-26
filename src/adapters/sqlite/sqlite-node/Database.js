@@ -1,17 +1,17 @@
 // @flow
 const fs = require(`fs`)
-const SQliteDatabase = require('better-sqlite3')
+const SQLCipherDatabase = require('better-sqlite3-sqlcipher')
 
 type SQLiteDatabaseType = any
 
 class Database {
   instance: $FlowFixMe<SQLiteDatabaseType> = undefined
-
   path: string
+  encryptionKey: ?string
 
-  constructor(path: string = ':memory:'): void {
+  constructor(path: string = ':memory:', encryptionKey: ?string): void {
     this.path = path
-    // this.instance = new SQliteDatabase(path);
+    this.encryptionKey = encryptionKey
     this.open()
   }
 
@@ -22,8 +22,19 @@ class Database {
     }
 
     try {
-      // eslint-disable-next-line no-console
-      this.instance = new SQliteDatabase(path, { verboze: console.log })
+      // Initialize SQLCipher database with encryption if key is provided
+      this.instance = new SQLCipherDatabase(path, { 
+        verbose: console.log,
+      })
+
+      // Configure encryption if a key is provided
+      if (this.encryptionKey) {
+        // Set encryption key and configure SQLCipher
+        this.instance.pragma(`key = '${this.encryptionKey}'`)
+        this.instance.pragma('cipher = aes-256-cbc')
+        this.instance.pragma('cipher_page_size = 4096')
+        this.instance.pragma('kdf_iter = 64000')
+      }
     } catch (error) {
       throw new Error(`Failed to open the database. - ${error.message}`)
     }

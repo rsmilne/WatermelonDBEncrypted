@@ -64,6 +64,8 @@ export default class SQLiteAdapter implements DatabaseAdapter {
 
   _initPromise: Promise<void>
 
+  encryptionKey: ?string
+
   constructor(options: SQLiteAdapterOptions): void {
     // console.log(`---> Initializing new adapter (${this._tag})`)
     const {
@@ -73,6 +75,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
       migrationEvents,
       usesExclusiveLocking = false,
       experimentalUnsafeNativeReuse = false,
+      encryptionKey,
     } = options
     this.schema = schema
     this.migrations = migrations
@@ -85,6 +88,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
       usesExclusiveLocking,
       experimentalUnsafeNativeReuse,
     })
+    this.encryptionKey = encryptionKey
 
     if (process.env.NODE_ENV !== 'production') {
       validateAdapter(this)
@@ -110,6 +114,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
       schema: this.schema,
       jsi: this._dispatcherType === 'jsi',
       ...(this.migrations ? { migrations: this.migrations } : {}),
+      encryptionKey: this.encryptionKey,
       ...options,
     })
     invariant(
@@ -133,7 +138,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
     // we're good. If not, we try again, this time sending the compiled schema or a migration set
     // This is to speed up the launch (less to do and pass through bridge), and avoid repeating
     // migration logic inside native code
-    this._dispatcher.call('initialize', [this.dbName, this.schema.version], (result) => {
+    this._dispatcher.call('initialize', [this.dbName, this.schema.version, this.encryptionKey], (result) => {
       if (result.error) {
         callback(result)
         return
@@ -172,6 +177,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
           require('./encodeSchema').encodeMigrationSteps(migrationSteps),
           databaseVersion,
           this.schema.version,
+          this.encryptionKey,
         ],
         (result) => {
           if (result.error) {
@@ -200,7 +206,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
     logger.log(`[SQLite] Setting up database with schema version ${this.schema.version}`)
     this._dispatcher.call(
       'setUpWithSchema',
-      [this.dbName, this._encodedSchema(), this.schema.version],
+      [this.dbName, this._encodedSchema(), this.schema.version, this.encryptionKey],
       (result) => {
         if (!result.error) {
           logger.log(`[SQLite] Schema set up successfully`)
@@ -329,7 +335,7 @@ export default class SQLiteAdapter implements DatabaseAdapter {
   unsafeResetDatabase(callback: ResultCallback<void>): void {
     this._dispatcher.call(
       'unsafeResetDatabase',
-      [this._encodedSchema(), this.schema.version],
+      [this._encodedSchema(), this.schema.version, this.encryptionKey],
       (result) => {
         if (result.value) {
           logger.log('[SQLite] Database is now reset')

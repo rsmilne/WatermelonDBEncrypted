@@ -1,6 +1,6 @@
 {
-  "name": "@nozbe/watermelondb",
-  "description": "Build powerful React Native and React web apps that scale from hundreds to tens of thousands of records and remain fast",
+  "name": "@nozbe/watermelondb-encrypted",
+  "description": "Build powerful React Native and React web apps that scale from hundreds to tens of thousands of records and remain fast - with SQLCipher encryption support",
   "version": "0.27.1",
   "scripts": {
     "up": "yarn",
@@ -62,6 +62,7 @@
     "@babel/runtime": "7.21.0",
     "@nozbe/simdjson": "3.1.0-wmelon1",
     "@nozbe/sqlite": "3.40.1",
+    "better-sqlite3-sqlcipher": "^8.7.0",
     "hoist-non-react-statics": "^3.3.2",
     "lokijs": "npm:@nozbe/lokijs@1.5.12-wmelon6",
     "rxjs": "^7.8.0",
@@ -124,7 +125,6 @@
     "babel-plugin-minify-guarded-expressions": "^0.4.4",
     "babel-plugin-minify-replace": "^0.5.0",
     "babel-plugin-module-resolver": "^5.0.0",
-    "better-sqlite3": "^8.1.0",
     "big-list-of-naughty-strings": "https://github.com/radex/big-list-of-naughty-strings#8346238a82f1e3a6f62389def1e668d80e4023fb",
     "cavy": "git+https://github.com/Nozbe/cavy.git",
     "chokidar": "^3.5.3",

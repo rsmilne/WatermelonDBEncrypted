@@ -31,7 +31,6 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
         this.reactContext = reactContext;
     }
 
-
     public static final String NAME = "WMDatabaseBridge";
 
     @NonNull
@@ -43,46 +42,62 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     private final Map<Integer, Connection> connections = new HashMap<>();
 
     @ReactMethod
-    public void initialize(final Integer tag, final String databaseName, final int schemaVersion, final boolean unsafeNativeReuse, final Promise promise) {
-        if (connections.containsKey(tag)) {
-            throw new IllegalStateException("A driver with tag " + tag + " already set up");
-        }
-        final WritableMap promiseMap = Arguments.createMap();
+    public void initialize(String dbName, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            connections.put(tag, new Connection.Connected(new WMDatabaseDriver((Context) reactContext, databaseName, schemaVersion, unsafeNativeReuse)));
-            promiseMap.putString("code", "ok");
-            promise.resolve(promiseMap);
-        } catch (SchemaNeededError e) {
-            connections.put(tag, new Connection.Waiting(new ArrayList<>()));
-            promiseMap.putString("code", "schema_needed");
-            promise.resolve(promiseMap);
-        } catch (MigrationNeededError e) {
-            connections.put(tag, new Connection.Waiting(new ArrayList<>()));
-            promiseMap.putString("code", "migrations_needed");
-            promiseMap.putInt("databaseVersion", e.databaseVersion);
-            promise.resolve(promiseMap);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            int version = database.getUserVersion();
+
+            if (version == 0) {
+                promise.resolve(makeVersionMap("schema_needed", 0));
+            } else if (version < schemaVersion) {
+                promise.resolve(makeVersionMap("migrations_needed", version));
+            } else if (version > schemaVersion) {
+                promise.reject("schema_version_mismatch", "Database has newer schema version than app schema version. Database will be cleared.");
+            } else {
+                promise.resolve(makeVersionMap("ok", version));
+            }
         } catch (Exception e) {
-            promise.reject(e);
+            promise.reject("initialize_error", "Failed to initialize database", e);
         }
     }
 
     @ReactMethod
-    public void setUpWithSchema(final Integer tag, final String databaseName, final String schema, final int schemaVersion, final boolean unsafeNativeReuse, final Promise promise) {
-        connectDriver(tag, new WMDatabaseDriver(reactContext, databaseName, new Schema(schemaVersion, schema), unsafeNativeReuse), promise);
-    }
-
-    @ReactMethod
-    public void setUpWithMigrations(final Integer tag, final String databaseName, final String migrations, final int fromVersion, final int toVersion, final boolean unsafeNativeReuse, final Promise promise) {
+    public void setUpWithSchema(String dbName, String schema, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            connectDriver(tag, new WMDatabaseDriver(reactContext, databaseName, new MigrationSet(fromVersion, toVersion, migrations), unsafeNativeReuse), promise);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            database.unsafeExecuteStatements(schema);
+            database.setUserVersion(schemaVersion);
+            promise.resolve(true);
         } catch (Exception e) {
-            disconnectDriver(tag);
-            promise.reject(e);
+            promise.reject("setup_schema_error", "Failed to set up schema", e);
         }
     }
 
     @ReactMethod
-    private void find(int tag, String table, String id, Promise promise) {
+    public void setUpWithMigrations(String dbName, ReadableArray migrations, int fromVersion, int toVersion, String encryptionKey, Promise promise) {
+        try {
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
+            int databaseVersion = database.getUserVersion();
+            if (databaseVersion != fromVersion) {
+                promise.reject("invalid_database_version",
+                        String.format("Invalid database version. Expected %d, got %d.", fromVersion, databaseVersion));
+                return;
+            }
+
+            for (int i = 0; i < migrations.size(); i++) {
+                String migration = migrations.getString(i);
+                database.unsafeExecuteStatements(migration);
+            }
+
+            database.setUserVersion(toVersion);
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("migration_error", "Failed to migrate database", e);
+        }
+    }
+
+    @ReactMethod
+    public void find(int tag, String table, String id, Promise promise) {
         withDriver(tag, promise, (driver) -> driver.find(table, id), "find " + id);
     }
 
@@ -192,7 +207,6 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
         }
     }
 
-
     private void connectDriver(int connectionTag, WMDatabaseDriver driver, Promise promise) {
         List<Runnable> queue = getQueue(connectionTag);
         connections.put(connectionTag, new Connection.Connected(driver));
@@ -279,5 +293,12 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
                 }
             }
         });
+    }
+
+    private WritableMap makeVersionMap(String code, int version) {
+        WritableMap map = Arguments.createMap();
+        map.putString("code", code);
+        map.putInt("databaseVersion", version);
+        return map;
     }
 }
