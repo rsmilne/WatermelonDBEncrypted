@@ -136,27 +136,53 @@ public class WMDatabaseDriver {
 
     public void batch(ReadableArray operations) {
         logger.info("Executing batch operations");
-        for (int i = 0; i < operations.size(); i++) {
-            ReadableArray operation = operations.getArray(i);
-            int cacheBehavior = operation.getInt(0);
-            String table = cacheBehavior != 0 ? operation.getString(1) : "";
-            String sql = operation.getString(2);
-            ReadableArray argBatches = operation.getArray(3);
+        try {
+            for (int i = 0; i < operations.size(); i++) {
+                ReadableArray operation = operations.getArray(i);
+                int cacheBehavior = operation.getInt(0);
+                String table = cacheBehavior != 0 ? operation.getString(1) : "";
+                String sql = operation.getString(2);
+                ReadableArray argBatches = operation.getArray(3);
 
-            for (int j = 0; j < argBatches.size(); j++) {
-                Object[] args = argBatches.getArray(j).toArrayList().toArray();
-                database.execute(sql, args);
-                if (cacheBehavior != 0) {
-                    String id = (String) args[0];
-                    if (cacheBehavior == 1) {
-                        markAsCached(table, id);
-                    } else if (cacheBehavior == -1) {
-                        removeFromCache(table, id);
+                for (int j = 0; j < argBatches.size(); j++) {
+                    ReadableArray argArray = argBatches.getArray(j);
+                    Object[] args = new Object[argArray.size()];
+                    for (int k = 0; k < argArray.size(); k++) {
+                        switch (argArray.getType(k)) {
+                            case Number:
+                                args[k] = argArray.getDouble(k);
+                                break;
+                            case String:
+                                args[k] = argArray.getString(k);
+                                break;
+                            case Boolean:
+                                args[k] = argArray.getBoolean(k) ? 1 : 0;
+                                break;
+                            case Null:
+                                args[k] = null;
+                                break;
+                            default:
+                                throw new IllegalArgumentException("Unsupported argument type: " + argArray.getType(k));
+                        }
+                    }
+                    
+                    database.execute(sql, args);
+                    
+                    if (cacheBehavior != 0 && args.length > 0) {
+                        String id = args[0].toString();
+                        if (cacheBehavior == 1) {
+                            markAsCached(table, id);
+                        } else if (cacheBehavior == -1) {
+                            removeFromCache(table, id);
+                        }
                     }
                 }
             }
+            logger.info("Batch operations completed successfully");
+        } catch (Exception e) {
+            logger.severe("Error executing batch operations: " + e.getMessage());
+            throw e;
         }
-        logger.info("Batch operations completed");
     }
 
     public void unsafeResetDatabase(Schema schema) {

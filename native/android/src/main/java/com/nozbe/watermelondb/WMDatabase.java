@@ -113,6 +113,10 @@ public class WMDatabase {
         db.execSQL(sql);
     }
 
+    public void execute(String sql, Object[] args) {
+        db.execSQL(sql, args);
+    }
+
     public void unsafeExecuteStatements(String sql) {
         String[] statements = sql.split(";(\\s)*[\\r\\n]+");
         for (String statement : statements) {
