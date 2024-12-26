@@ -1,17 +1,14 @@
 package com.nozbe.watermelondb;
 
 import android.content.Context;
-import android.database.Cursor;
 import net.sqlcipher.database.SQLiteDatabase;
 import net.sqlcipher.database.SQLiteCursor;
 import net.sqlcipher.database.SQLiteCursorDriver;
 import net.sqlcipher.database.SQLiteQuery;
 import net.sqlcipher.database.SQLiteDatabase.CursorFactory;
-import net.sqlcipher.DatabaseUtils;
+import net.sqlcipher.Cursor;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -57,7 +54,7 @@ public class WMDatabase {
             context.getCacheDir().delete();
             path = new File(context.getCacheDir(), name).getPath();
         } else {
-            path = context.getDatabasePath("" + name + ".db").getPath().replace("/databases", "");
+            path = context.getDatabasePath(name + ".db").getPath();
         }
 
         // Initialize SQLCipher
@@ -66,12 +63,12 @@ public class WMDatabase {
         SQLiteDatabase database;
         if (encryptionKey != null && !encryptionKey.isEmpty()) {
             // Open or create encrypted database
-            database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null, null);
+            database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null);
             // Configure SQLCipher settings
             database.execSQL(DEFAULT_CIPHER_SETTINGS);
         } else {
             // Open or create unencrypted database with empty password
-            database = SQLiteDatabase.openOrCreateDatabase(path, "", null, null);
+            database = SQLiteDatabase.openOrCreateDatabase(path, "", null);
             // Enable WAL mode
             database.execSQL("PRAGMA journal_mode = WAL;");
         }
