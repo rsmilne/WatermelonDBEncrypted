@@ -13,7 +13,11 @@ import java.util.Map;
 
 public class WMDatabase {
     private final SQLiteDatabase db;
-    private static final String DEFAULT_CIPHER_SETTINGS = "PRAGMA cipher_compatibility = 4; PRAGMA kdf_iter = 64000; PRAGMA cipher_page_size = 4096;";
+    private static final String DEFAULT_CIPHER_SETTINGS = 
+        "PRAGMA cipher_compatibility = 4;" + 
+        "PRAGMA kdf_iter = 64000;" + 
+        "PRAGMA cipher_page_size = 4096;" +
+        "PRAGMA journal_mode = WAL;";  // Enable WAL mode directly via PRAGMA
 
     private WMDatabase(SQLiteDatabase db) {
         this.db = db;
@@ -22,18 +26,14 @@ public class WMDatabase {
     public static Map<String, WMDatabase> INSTANCES = new HashMap<>();
 
     public static WMDatabase getInstance(String name, Context context) {
-        return getInstance(name, context, null, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+        return getInstance(name, context, null);
     }
 
-    public static WMDatabase getInstance(String name, Context context, int openFlags) {
-        return getInstance(name, context, null, openFlags);
-    }
-
-    public static WMDatabase getInstance(String name, Context context, String encryptionKey, int openFlags) {
+    public static WMDatabase getInstance(String name, Context context, String encryptionKey) {
         synchronized (WMDatabase.class) {
             WMDatabase instance = INSTANCES.getOrDefault(name, null);
             if (instance == null || !instance.isOpen()) {
-                WMDatabase database = buildDatabase(name, context, encryptionKey, openFlags);
+                WMDatabase database = buildDatabase(name, context, encryptionKey);
                 INSTANCES.put(name, database);
                 return database;
             } else {
@@ -42,18 +42,17 @@ public class WMDatabase {
         }
     }
 
-    public static WMDatabase buildDatabase(String name, Context context, String encryptionKey, int openFlags) {
-        SQLiteDatabase sqLiteDatabase = WMDatabase.createSQLiteDatabase(name, context, encryptionKey, openFlags);
+    public static WMDatabase buildDatabase(String name, Context context, String encryptionKey) {
+        SQLiteDatabase sqLiteDatabase = WMDatabase.createSQLiteDatabase(name, context, encryptionKey);
         return new WMDatabase(sqLiteDatabase);
     }
 
-    private static SQLiteDatabase createSQLiteDatabase(String name, Context context, String encryptionKey, int openFlags) {
+    private static SQLiteDatabase createSQLiteDatabase(String name, Context context, String encryptionKey) {
         String path;
         if (name.equals(":memory:") || name.contains("mode=memory")) {
             context.getCacheDir().delete();
             path = new File(context.getCacheDir(), name).getPath();
         } else {
-            // On some systems there is some kind of lock on `/databases` folder ¯\_(ツ)_/¯
             path = context.getDatabasePath("" + name + ".db").getPath().replace("/databases", "");
         }
 
@@ -64,17 +63,13 @@ public class WMDatabase {
         if (encryptionKey != null && !encryptionKey.isEmpty()) {
             // Open or create encrypted database
             database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null);
-            // Configure SQLCipher settings
+            // Configure SQLCipher settings and enable WAL mode
             database.execSQL(DEFAULT_CIPHER_SETTINGS);
         } else {
             // Open or create unencrypted database
             database = SQLiteDatabase.openOrCreateDatabase(path, null);
-        }
-
-        if (openFlags != 0) {
-            if ((openFlags & SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) != 0) {
-                database.enableWriteAheadLogging();
-            }
+            // Enable WAL mode for unencrypted database
+            database.execSQL("PRAGMA journal_mode = WAL;");
         }
         
         return database;

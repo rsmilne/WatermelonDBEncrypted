@@ -1,8 +1,8 @@
 package com.nozbe.watermelondb;
 
 import android.content.Context;
-import android.os.Trace;
-import androidx.annotation.NonNull;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteException;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -11,94 +11,81 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
-import com.facebook.react.bridge.WritableMap;
-import com.nozbe.watermelondb.utils.MigrationSet;
-import com.nozbe.watermelondb.utils.Schema;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.logging.Logger;
-import java.security.SecureRandom;
 
 public class WMDatabaseBridge extends ReactContextBaseJavaModule {
-    ReactApplicationContext reactContext;
+    private Context context;
 
     public WMDatabaseBridge(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.reactContext = reactContext;
+        this.context = reactContext;
     }
 
-    public static final String NAME = "WMDatabaseBridge";
-
-    @NonNull
     @Override
     public String getName() {
-        return NAME;
+        return "WMDatabaseBridge";
     }
-
-    private final Map<Integer, Connection> connections = new HashMap<>();
 
     @ReactMethod
     public void initialize(String dbName, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
-                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
-                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
             int version = database.getUserVersion();
 
             if (version == 0) {
-                promise.resolve(makeVersionMap("schema_needed", 0));
-            } else if (version < schemaVersion) {
-                promise.resolve(makeVersionMap("migrations_needed", version));
-            } else if (version > schemaVersion) {
-                promise.reject("schema_version_mismatch", "Database has newer schema version than app schema version. Database will be cleared.");
-            } else {
-                promise.resolve(makeVersionMap("ok", version));
+                database.setUserVersion(schemaVersion);
+                promise.resolve(true);
+                return;
             }
+
+            if (version != schemaVersion) {
+                promise.reject("schema_version_mismatch", "Expected schema version " + schemaVersion + ", found " + version);
+                return;
+            }
+
+            promise.resolve(true);
         } catch (Exception e) {
-            promise.reject("initialize_error", "Failed to initialize database", e);
+            promise.reject("initialize_error", e);
         }
     }
 
     @ReactMethod
     public void setUpWithSchema(String dbName, String schema, int schemaVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
-                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
-                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
             database.unsafeExecuteStatements(schema);
             database.setUserVersion(schemaVersion);
             promise.resolve(true);
         } catch (Exception e) {
-            promise.reject("setup_schema_error", "Failed to set up schema", e);
+            promise.reject("setup_error", e);
         }
     }
 
     @ReactMethod
     public void setUpWithMigrations(String dbName, ReadableArray migrations, int fromVersion, int toVersion, String encryptionKey, Promise promise) {
         try {
-            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey, 
-                net.sqlcipher.database.SQLiteDatabase.CREATE_IF_NECESSARY | 
-                net.sqlcipher.database.SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+            WMDatabase database = WMDatabase.getInstance(dbName, getReactApplicationContext(), encryptionKey);
             int databaseVersion = database.getUserVersion();
             if (databaseVersion != fromVersion) {
                 promise.reject("invalid_database_version",
-                        String.format("Invalid database version. Expected %d, got %d.", fromVersion, databaseVersion));
+                        "Invalid database version: " + databaseVersion + ", expected: " + fromVersion);
                 return;
             }
 
+            int migrationIndex = 0;
             for (int i = 0; i < migrations.size(); i++) {
                 String migration = migrations.getString(i);
                 database.unsafeExecuteStatements(migration);
+                migrationIndex = i;
             }
 
             database.setUserVersion(toVersion);
             promise.resolve(true);
         } catch (Exception e) {
-            promise.reject("migration_error", "Failed to migrate database", e);
+            promise.reject("migration_error", e);
         }
     }
 
