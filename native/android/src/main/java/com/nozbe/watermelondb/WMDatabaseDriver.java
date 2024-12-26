@@ -2,11 +2,11 @@ package com.nozbe.watermelondb.encrypted;
 
 import android.content.Context;
 import net.sqlcipher.Cursor;
-import net.sqlcipher.database.SQLiteDatabase;
-
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
+import com.nozbe.watermelondb.encrypted.utils.DatabaseUtils;
+import com.nozbe.watermelondb.encrypted.utils.Schema;
 
 import java.util.ArrayList;
 import java.util.HashMap;

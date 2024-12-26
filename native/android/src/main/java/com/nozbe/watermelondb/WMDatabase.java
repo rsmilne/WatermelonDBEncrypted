@@ -2,6 +2,8 @@ package com.nozbe.watermelondb.encrypted;
 
 import android.content.Context;
 import net.sqlcipher.database.SQLiteDatabase;
+import net.sqlcipher.database.SQLiteException;
+import net.sqlcipher.database.SQLiteOpenHelper;
 import net.sqlcipher.database.SQLiteCursor;
 import net.sqlcipher.database.SQLiteCursorDriver;
 import net.sqlcipher.database.SQLiteQuery;
