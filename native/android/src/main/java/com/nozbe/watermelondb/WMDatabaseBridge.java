@@ -1,4 +1,4 @@
-package com.nozbe.watermelondb;
+package com.nozbe.watermelondb.encrypted;
 
 import android.content.Context;
 import android.database.Cursor;
