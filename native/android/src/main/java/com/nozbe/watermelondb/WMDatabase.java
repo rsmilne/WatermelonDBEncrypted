@@ -4,6 +4,10 @@ import android.content.Context;
 import android.database.Cursor;
 import net.sqlcipher.database.SQLiteDatabase;
 import net.sqlcipher.database.SQLiteCursor;
+import net.sqlcipher.database.SQLiteCursorDriver;
+import net.sqlcipher.database.SQLiteQuery;
+import net.sqlcipher.database.SQLiteDatabase.CursorFactory;
+import net.sqlcipher.DatabaseUtils;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -17,7 +21,7 @@ public class WMDatabase {
         "PRAGMA cipher_compatibility = 4;" + 
         "PRAGMA kdf_iter = 64000;" + 
         "PRAGMA cipher_page_size = 4096;" +
-        "PRAGMA journal_mode = WAL;";  // Enable WAL mode directly via PRAGMA
+        "PRAGMA journal_mode = WAL;";
 
     private WMDatabase(SQLiteDatabase db) {
         this.db = db;
@@ -62,156 +66,63 @@ public class WMDatabase {
         SQLiteDatabase database;
         if (encryptionKey != null && !encryptionKey.isEmpty()) {
             // Open or create encrypted database
-            database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null);
-            // Configure SQLCipher settings and enable WAL mode
+            database = SQLiteDatabase.openOrCreateDatabase(path, encryptionKey, null, null);
+            // Configure SQLCipher settings
             database.execSQL(DEFAULT_CIPHER_SETTINGS);
         } else {
-            // Open or create unencrypted database
-            database = SQLiteDatabase.openOrCreateDatabase(path, null);
-            // Enable WAL mode for unencrypted database
+            // Open or create unencrypted database with empty password
+            database = SQLiteDatabase.openOrCreateDatabase(path, "", null, null);
+            // Enable WAL mode
             database.execSQL("PRAGMA journal_mode = WAL;");
         }
         
         return database;
     }
 
-    public void setUserVersion(int version) {
-        db.setVersion(version);
+    public void close() {
+        if (db != null && db.isOpen()) {
+            db.close();
+        }
+    }
+
+    public boolean isOpen() {
+        return db != null && db.isOpen();
     }
 
     public int getUserVersion() {
-        return db.getVersion();
-    }
-
-    public void unsafeExecuteStatements(String statements) {
-        this.transaction(() -> {
-            // NOTE: This must NEVER be allowed to take user input - split by `;` is not grammar-aware
-            // and so is unsafe. Only works with Watermelon-generated strings known to be safe
-            for (String statement : statements.split(";")) {
-                if (!statement.trim().isEmpty()) {
-                    this.execute(statement);
-                }
-            }
-        });
-    }
-
-    public void execute(String query, Object[] args) {
-        db.execSQL(query, args);
-    }
-
-    public void execute(String query) {
-        db.execSQL(query);
-    }
-
-    public void delete(String query, Object[] args) {
-        db.execSQL(query, args);
-    }
-
-    public Cursor rawQuery(String sql, Object[] args) {
-        // HACK: db.rawQuery only supports String args, and there's no clean way AFAIK to construct
-        // a query with arbitrary args (like with execSQL). However, we can misuse cursor factory
-        // to get the reference of a SQLiteQuery before it's executed
-        // https://github.com/aosp-mirror/platform_frameworks_base/blob/0799624dc7eb4b4641b4659af5b5ec4b9f80dd81/core/java/android/database/sqlite/SQLiteDirectCursorDriver.java#L30
-        // https://github.com/aosp-mirror/platform_frameworks_base/blob/0799624dc7eb4b4641b4659af5b5ec4b9f80dd81/core/java/android/database/sqlite/SQLiteProgram.java#L32
-        String[] rawArgs = new String[args.length];
-        Arrays.fill(rawArgs, "");
-        return db.rawQueryWithFactory(
-                (db1, driver, editTable, query) -> {
-                    for (int i = 0; i < args.length; i++) {
-                        Object arg = args[i];
-                        if (arg instanceof String) {
-                            query.bindString(i + 1, (String) arg);
-                        } else if (arg instanceof Boolean) {
-                            query.bindLong(i + 1, (Boolean) arg ? 1 : 0);
-                        } else if (arg instanceof Double) {
-                            query.bindDouble(i + 1, (Double) arg);
-                        } else if (arg == null) {
-                            query.bindNull(i + 1);
-                        } else {
-                            throw new IllegalArgumentException("Bad query arg type: " + arg.getClass().getCanonicalName());
-                        }
-                    }
-                    return new SQLiteCursor(driver, editTable, query);
-                }, sql, rawArgs, null, null
-        );
-    }
-
-    public Cursor rawQuery(String sql) {
-        return rawQuery(sql, new Object[] {});
-    }
-
-    public int count(String query, Object[] args) {
-        try (Cursor cursor = rawQuery(query, args)) {
+        try (Cursor cursor = db.rawQuery("PRAGMA user_version", null)) {
             cursor.moveToFirst();
-            int columnIndex = cursor.getColumnIndex("count");
-            if (cursor.getCount() > 0) {
-                return cursor.getInt(columnIndex);
-            } else {
-                return 0;
-            }
+            return cursor.getInt(0);
         }
     }
 
-    public int count(String query) {
-        return this.count(query, new Object[]{});
+    public void setUserVersion(int version) {
+        db.execSQL("PRAGMA user_version = " + version);
     }
 
-    public String getFromLocalStorage(String key) {
-        try (Cursor cursor = rawQuery(Queries.select_local_storage, new Object[]{key})) {
-            cursor.moveToFirst();
-            if (cursor.getCount() > 0) {
-                return cursor.getString(0);
-            } else {
-                return null;
+    public Cursor rawQuery(String sql, String[] args) {
+        return db.rawQueryWithFactory(new CursorFactory() {
+            @Override
+            public Cursor newCursor(SQLiteDatabase db,
+                                  SQLiteCursorDriver driver,
+                                  String editTable,
+                                  SQLiteQuery query) {
+                return new SQLiteCursor(db, driver, editTable, query);
+            }
+        }, sql, args, null);
+    }
+
+    public void execute(String sql) {
+        db.execSQL(sql);
+    }
+
+    public void unsafeExecuteStatements(String sql) {
+        String[] statements = sql.split(";(\\s)*[\\r\\n]+");
+        for (String statement : statements) {
+            String trimmed = statement.trim();
+            if (!trimmed.isEmpty()) {
+                db.execSQL(trimmed);
             }
         }
-    }
-
-    private ArrayList<String> getAllTables() {
-        ArrayList<String> allTables = new ArrayList<>();
-        try (Cursor cursor = rawQuery(Queries.select_tables)) {
-            cursor.moveToFirst();
-            int nameIndex = cursor.getColumnIndex("name");
-            if (nameIndex > -1) {
-                do {
-                    allTables.add(cursor.getString(nameIndex));
-                } while (cursor.moveToNext());
-            }
-        }
-        return allTables;
-    }
-
-    public void unsafeDestroyEverything() {
-        this.transaction(() -> {
-            for (String tableName : getAllTables()) {
-                execute(Queries.dropTable(tableName));
-            }
-            execute("pragma writable_schema=1");
-            execute("delete from sqlite_master where type in ('table', 'index', 'trigger')");
-            execute("pragma user_version=0");
-            execute("pragma writable_schema=0");
-        });
-    }
-
-    interface TransactionFunction {
-        void applyTransactionFunction();
-    }
-
-    public void transaction(TransactionFunction function) {
-        db.beginTransaction();
-        try {
-            function.applyTransactionFunction();
-            db.setTransactionSuccessful();
-        } finally {
-            db.endTransaction();
-        }
-    }
-
-    public Boolean isOpen() {
-        return db.isOpen();
-    }
-
-    public void close() {
-        db.close();
     }
 }

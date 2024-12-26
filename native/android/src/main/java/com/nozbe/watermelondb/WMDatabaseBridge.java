@@ -3,6 +3,7 @@ package com.nozbe.watermelondb;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteException;
+import androidx.annotation.NonNull;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -11,22 +12,30 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.module.annotations.ReactModule;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
+@ReactModule(name = WMDatabaseBridge.NAME)
 public class WMDatabaseBridge extends ReactContextBaseJavaModule {
-    private Context context;
+    static final String NAME = "WMDatabaseBridge";
+    private final ReactApplicationContext reactContext;
 
     public WMDatabaseBridge(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.context = reactContext;
+        this.reactContext = reactContext;
     }
 
     @Override
+    @NonNull
     public String getName() {
-        return "WMDatabaseBridge";
+        return NAME;
+    }
+
+    private WritableMap makeVersionMap(String code, int version) {
+        WritableMap map = Arguments.createMap();
+        map.putString("code", code);
+        map.putInt("version", version);
+        return map;
     }
 
     @ReactMethod
@@ -36,17 +45,21 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
             int version = database.getUserVersion();
 
             if (version == 0) {
-                database.setUserVersion(schemaVersion);
-                promise.resolve(true);
+                promise.resolve(makeVersionMap("schema_needed", 0));
                 return;
             }
 
-            if (version != schemaVersion) {
-                promise.reject("schema_version_mismatch", "Expected schema version " + schemaVersion + ", found " + version);
+            if (version < schemaVersion) {
+                promise.resolve(makeVersionMap("migrations_needed", version));
                 return;
             }
 
-            promise.resolve(true);
+            if (version > schemaVersion) {
+                promise.reject("schema_version_mismatch", "Database has newer schema version than app schema version");
+                return;
+            }
+
+            promise.resolve(makeVersionMap("ok", version));
         } catch (Exception e) {
             promise.reject("initialize_error", e);
         }
@@ -75,11 +88,9 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
                 return;
             }
 
-            int migrationIndex = 0;
             for (int i = 0; i < migrations.size(); i++) {
                 String migration = migrations.getString(i);
                 database.unsafeExecuteStatements(migration);
-                migrationIndex = i;
             }
 
             database.setUserVersion(toVersion);
@@ -181,7 +192,6 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
 
     private void withDriver(final int tag, final Promise promise, final ParamFunction function, String functionName) {
         try {
-            Trace.beginSection("WMDatabaseBridge." + functionName);
             Connection connection = connections.get(tag);
             if (connection == null) {
                 promise.reject(new Exception("No driver with tag " + tag + " available"));
@@ -195,8 +205,6 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
             }
         } catch (Exception e) {
             promise.reject(functionName, e);
-        } finally {
-            Trace.endSection();
         }
     }
 
@@ -241,8 +249,8 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
         }
 
         byte[] randomBytes = new byte[256];
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(randomBytes);
+        SecureRandom secureRandom = new SecureRandom();
+        secureRandom.nextBytes(randomBytes);
 
         WritableArray result = Arguments.createArray();
         for (byte value : randomBytes) {
@@ -253,45 +261,60 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
 
     @Override
     public void invalidate() {
-        // NOTE: See Database::install() for explanation
+        logger.info("Invalidating WMDatabaseBridge");
+        try {
+            // Close all database connections
+            for (Connection connection : connections.values()) {
+                if (connection.database != null) {
+                    connection.database.close();
+                }
+            }
+            connections.clear();
+        }
         super.invalidate();
-        reactContext.getCatalystInstance().getReactQueueConfiguration().getJSQueueThread().runOnQueue(() -> {
-            try {
-                Class<?> clazz = Class.forName("com.nozbe.watermelondb.jsi.WatermelonJSI");
-                Method method = clazz.getDeclaredMethod("onCatalystInstanceDestroy");
-                method.invoke(null);
-            } catch (Exception e) {
-                if (BuildConfig.DEBUG) {
-                    Logger logger = Logger.getLogger("DB_Bridge");
-                    logger.info("Could not find JSI onCatalystInstanceDestroy");
-                }
-            }
-        });
     }
 
-    @Deprecated
-    @Override
-    public void onCatalystInstanceDestroy() {
-        // NOTE: See Database::install() for explanation
-        super.onCatalystInstanceDestroy();
-        reactContext.getCatalystInstance().getReactQueueConfiguration().getJSQueueThread().runOnQueue(() -> {
-            try {
-                Class<?> clazz = Class.forName("com.nozbe.watermelondb.jsi.WatermelonJSI");
-                Method method = clazz.getDeclaredMethod("onCatalystInstanceDestroy");
-                method.invoke(null);
-            } catch (Exception e) {
-                if (BuildConfig.DEBUG) {
-                    Logger logger = Logger.getLogger("DB_Bridge");
-                    logger.info("Could not find JSI onCatalystInstanceDestroy");
-                }
-            }
-        });
+    private static class Connection {
+        final WMDatabase database;
+        final Schema schema;
+
+        Connection(WMDatabase database, Schema schema) {
+            this.database = database;
+            this.schema = schema;
+        }
     }
 
-    private WritableMap makeVersionMap(String code, int version) {
-        WritableMap map = Arguments.createMap();
-        map.putString("code", code);
-        map.putInt("databaseVersion", version);
-        return map;
+    private static class Connection {
+        WMDatabase database;
+        Schema schema;
+        List<Runnable> queue;
+
+        Connection(WMDatabase database, Schema schema) {
+            this.database = database;
+            this.schema = schema;
+        }
+
+        List<Runnable> getQueue() {
+            return queue;
+        }
     }
+
+    private static class Connection.Connected extends Connection {
+        WMDatabaseDriver driver;
+
+        Connection.Connected(WMDatabaseDriver driver) {
+            this.driver = driver;
+        }
+    }
+
+    private static class Connection.Waiting extends Connection {
+        List<Runnable> queue;
+
+        Connection.Waiting(List<Runnable> queue) {
+            this.queue = queue;
+        }
+    }
+
+    private final Map<Integer, Connection> connections = new HashMap<>();
+    private static final Logger logger = Logger.getLogger(WMDatabaseBridge.class.getName());
 }
