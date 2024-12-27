@@ -8,7 +8,10 @@ import android.os.Trace;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReadableArray;
+import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
+
 import com.nozbe.watermelondb.utils.MigrationSet;
 import com.nozbe.watermelondb.utils.Pair;
 import com.nozbe.watermelondb.utils.Schema;
@@ -20,52 +23,71 @@ import java.util.Map;
 import java.util.logging.Logger;
 
 public class WMDatabaseDriver {
-    private final WMDatabase database;
+    private final Context context;
+    private final String dbName;
+    private final String encryptionKey;
+    private WMDatabase database;
 
     private final Logger log;
     private final Map<String, List<String>> cachedRecords;
 
-    public WMDatabaseDriver(Context context, String dbName) {
-        this(context, dbName, false);
-    }
-
-    public WMDatabaseDriver(Context context, String dbName, int schemaVersion, boolean unsafeNativeReuse) {
-        this(context, dbName, unsafeNativeReuse);
-        SchemaCompatibility compatibility = isCompatible(schemaVersion);
-        if (compatibility instanceof SchemaCompatibility.NeedsSetup) {
-            throw new SchemaNeededError();
-        } else if (compatibility instanceof SchemaCompatibility.NeedsMigration) {
-            throw new MigrationNeededError(
-                    ((SchemaCompatibility.NeedsMigration) compatibility).fromVersion
-            );
-
-        }
-
-    }
-
-    public WMDatabaseDriver(Context context, String dbName, Schema schema, boolean unsafeNativeReuse) {
-        this(context, dbName, unsafeNativeReuse);
-        unsafeResetDatabase(schema);
-    }
-
-    public WMDatabaseDriver(Context context, String dbName, MigrationSet migrations, boolean unsafeNativeReuse) {
-        this(context, dbName, unsafeNativeReuse);
-        migrate(migrations);
-    }
-
-    public WMDatabaseDriver(Context context, String dbName, boolean unsafeNativeReuse) {
-        this.database = unsafeNativeReuse ? WMDatabase.getInstance(dbName, context,
-                SQLiteDatabase.CREATE_IF_NECESSARY |
-                        SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) :
-                WMDatabase.buildDatabase(dbName, context,
-                        SQLiteDatabase.CREATE_IF_NECESSARY |
-                                SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+    public WMDatabaseDriver(Context context, String dbName, String encryptionKey) {
+        this.context = context;
+        this.dbName = dbName;
+        this.encryptionKey = encryptionKey;
         if (BuildConfig.DEBUG) {
             this.log = Logger.getLogger("DB_Driver");
         } else {
             this.log = null;
         }
         this.cachedRecords = new HashMap<>();
+    }
+
+    public void initialize() {
+        if (database == null) {
+            database = WMDatabase.getInstance(dbName, context, encryptionKey);
+            database.initialize();
+        }
+    }
+
+    public WMDatabaseDriver(Context context, String dbName, int schemaVersion, boolean unsafeNativeReuse, String encryptionKey) {
+        this.database = unsafeNativeReuse ? 
+            WMDatabase.getInstance(dbName, context, encryptionKey) :
+            WMDatabase.getInstance(dbName, context, encryptionKey);
+
+        if (BuildConfig.DEBUG) {
+            this.log = Logger.getLogger("DB_Driver");
+        } else {
+            this.log = null;
+        }
+        this.cachedRecords = new HashMap<>();
+
+        SchemaCompatibility compatibility = isCompatible(schemaVersion);
+        if (compatibility instanceof SchemaCompatibility.NeedsSetup) {
+            throw new SchemaNeededError();
+        } else if (compatibility instanceof SchemaCompatibility.NeedsMigration) {
+            throw new MigrationNeededError(((SchemaCompatibility.NeedsMigration) compatibility).fromVersion);
+        }
+    }
+
+    public WMDatabaseDriver(Context context, String dbName, Schema schema, boolean unsafeNativeReuse, String encryptionKey) {
+        this(context, dbName, encryptionKey);
+        unsafeResetDatabase(schema);
+    }
+
+    public WMDatabaseDriver(Context context, String dbName, MigrationSet migrations, boolean unsafeNativeReuse, String encryptionKey) {
+        this(context, dbName, encryptionKey);
+        migrate(migrations);
+    }
+
+    public WMDatabaseDriver(Context context, String dbName, boolean unsafeNativeReuse, String encryptionKey) {
+        this(context, dbName, encryptionKey);
+        database = unsafeNativeReuse ? WMDatabase.getInstance(dbName, context, encryptionKey,
+                SQLiteDatabase.CREATE_IF_NECESSARY |
+                        SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) :
+                WMDatabase.buildDatabase(dbName, context, encryptionKey,
+                        SQLiteDatabase.CREATE_IF_NECESSARY |
+                                SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
     }
 
     public Object find(String table, String id) {
@@ -178,6 +200,74 @@ public class WMDatabaseDriver {
         Trace.endSection();
     }
 
+    public WritableArray query(String table, String query, Object[] args) {
+        WritableArray result = Arguments.createArray();
+        try (Cursor cursor = database.rawQuery(query, args)) {
+            while (cursor.moveToNext()) {
+                WritableMap map = Arguments.createMap();
+                for (int i = 0; i < cursor.getColumnCount(); i++) {
+                    String columnName = cursor.getColumnName(i);
+                    switch (cursor.getType(i)) {
+                        case Cursor.FIELD_TYPE_NULL:
+                            map.putNull(columnName);
+                            break;
+                        case Cursor.FIELD_TYPE_INTEGER:
+                            map.putDouble(columnName, cursor.getLong(i));
+                            break;
+                        case Cursor.FIELD_TYPE_FLOAT:
+                            map.putDouble(columnName, cursor.getDouble(i));
+                            break;
+                        case Cursor.FIELD_TYPE_STRING:
+                            map.putString(columnName, cursor.getString(i));
+                            break;
+                        case Cursor.FIELD_TYPE_BLOB:
+                            map.putString(columnName, new String(cursor.getBlob(i)));
+                            break;
+                    }
+                }
+                result.pushMap(map);
+            }
+        }
+        return result;
+    }
+
+    public void batch(ReadableArray operations) {
+        database.inTransaction(() -> {
+            for (int i = 0; i < operations.size(); i++) {
+                ReadableMap operation = operations.getMap(i);
+                String table = operation.getString("table");
+                String query = operation.getString("query");
+                ReadableArray args = operation.getArray("args");
+                
+                Object[] queryArgs = new Object[args.size()];
+                for (int j = 0; j < args.size(); j++) {
+                    switch (args.getType(j)) {
+                        case Null:
+                            queryArgs[j] = null;
+                            break;
+                        case Boolean:
+                            queryArgs[j] = args.getBoolean(j);
+                            break;
+                        case Number:
+                            queryArgs[j] = args.getDouble(j);
+                            break;
+                        case String:
+                            queryArgs[j] = args.getString(j);
+                            break;
+                    }
+                }
+                
+                database.execute(query, queryArgs);
+            }
+        });
+    }
+
+    public void close() {
+        if (database != null) {
+            database.close();
+            database = null;
+        }
+    }
 
     private void markAsCached(String table, String id) {
         // log.info("Mark as cached " + id);
@@ -200,10 +290,6 @@ public class WMDatabaseDriver {
             cache.remove(id);
             cachedRecords.put(table, cache);
         }
-    }
-
-    public void close() {
-        database.close();
     }
 
     private void migrate(MigrationSet migrations) {

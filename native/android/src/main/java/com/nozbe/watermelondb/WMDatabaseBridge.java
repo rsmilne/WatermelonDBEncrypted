@@ -1,7 +1,7 @@
 package com.nozbe.watermelondb;
 
 import android.content.Context;
-import android.os.Trace;
+import android.database.Cursor;
 import androidx.annotation.NonNull;
 
 import com.facebook.react.bridge.Arguments;
@@ -10,29 +10,25 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
+import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
-import com.nozbe.watermelondb.utils.MigrationSet;
-import com.nozbe.watermelondb.utils.Schema;
+import com.facebook.react.module.annotations.ReactModule;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Logger;
-import java.security.SecureRandom;
 
+@ReactModule(name = WMDatabaseBridge.NAME)
 public class WMDatabaseBridge extends ReactContextBaseJavaModule {
-    ReactApplicationContext reactContext;
+    public static final String NAME = "WMDatabaseBridge";
+    private WMDatabaseDriver driver = null;
+    private Map<Integer, Connection> connections = new HashMap<>();
 
     public WMDatabaseBridge(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.reactContext = reactContext;
     }
-
-
-    public static final String NAME = "WMDatabaseBridge";
 
     @NonNull
     @Override
@@ -40,16 +36,14 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
         return NAME;
     }
 
-    private final Map<Integer, Connection> connections = new HashMap<>();
-
     @ReactMethod
-    public void initialize(final Integer tag, final String databaseName, final int schemaVersion, final boolean unsafeNativeReuse, final Promise promise) {
+    public void initialize(Integer tag, String dbName, int schemaVersion, boolean unsafeNativeReuse, String encryptionKey, Promise promise) {
         if (connections.containsKey(tag)) {
             throw new IllegalStateException("A driver with tag " + tag + " already set up");
         }
-        final WritableMap promiseMap = Arguments.createMap();
+        WritableMap promiseMap = Arguments.createMap();
         try {
-            connections.put(tag, new Connection.Connected(new WMDatabaseDriver((Context) reactContext, databaseName, schemaVersion, unsafeNativeReuse)));
+            connections.put(tag, new Connection.Connected(new WMDatabaseDriver(getReactApplicationContext(), dbName, schemaVersion, unsafeNativeReuse, encryptionKey)));
             promiseMap.putString("code", "ok");
             promise.resolve(promiseMap);
         } catch (SchemaNeededError e) {
@@ -67,217 +61,177 @@ public class WMDatabaseBridge extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void setUpWithSchema(final Integer tag, final String databaseName, final String schema, final int schemaVersion, final boolean unsafeNativeReuse, final Promise promise) {
-        connectDriver(tag, new WMDatabaseDriver(reactContext, databaseName, new Schema(schemaVersion, schema), unsafeNativeReuse), promise);
-    }
-
-    @ReactMethod
-    public void setUpWithMigrations(final Integer tag, final String databaseName, final String migrations, final int fromVersion, final int toVersion, final boolean unsafeNativeReuse, final Promise promise) {
+    public void setUpWithSchema(String dbName, ReadableMap schema, boolean schemaVersion, String encryptionKey, Promise promise) {
         try {
-            connectDriver(tag, new WMDatabaseDriver(reactContext, databaseName, new MigrationSet(fromVersion, toVersion, migrations), unsafeNativeReuse), promise);
-        } catch (Exception e) {
-            disconnectDriver(tag);
-            promise.reject(e);
-        }
-    }
-
-    @ReactMethod
-    private void find(int tag, String table, String id, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.find(table, id), "find " + id);
-    }
-
-    @ReactMethod
-    public void query(int tag, String table, String query, ReadableArray args, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.cachedQuery(table, query, args.toArrayList().toArray()), "query");
-    }
-
-    @ReactMethod
-    public void queryIds(int tag, String query, ReadableArray args, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.queryIds(query, args.toArrayList().toArray()), "queryIds");
-    }
-
-    @ReactMethod
-    public void unsafeQueryRaw(int tag, String query, ReadableArray args, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.unsafeQueryRaw(query, args.toArrayList().toArray()), "unsafeQueryRaw");
-    }
-
-    @ReactMethod
-    public void count(int tag, String query, ReadableArray args, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.count(query, args.toArrayList().toArray()), "count");
-    }
-
-    @ReactMethod
-    public void batch(int tag, ReadableArray operations, Promise promise) {
-        withDriver(tag, promise, (driver) -> {
-            driver.batch(operations);
-            return true;
-        }, "batch");
-    }
-
-    @ReactMethod
-    public void unsafeResetDatabase(int tag, String schema, int schemaVersion, Promise promise) {
-        withDriver(tag, promise, (driver) -> {
-            driver.unsafeResetDatabase(new Schema(schemaVersion, schema));
-            return null;
-        }, "unsafeResetDatabase");
-    }
-
-    @ReactMethod
-    public void getLocal(int tag, String key, Promise promise) {
-        withDriver(tag, promise, (driver) -> driver.getLocal(key), "getLocal");
-    }
-
-    @ReactMethod(isBlockingSynchronousMethod = true)
-    public WritableArray unsafeGetLocalSynchronously(int tag, String key) {
-        try {
-            Connection connection = connections.get(tag);
-            if (connection == null) {
-                throw new Exception("No driver with tag " + tag + " available");
-            }
-            if (connection instanceof Connection.Connected) {
-                String value = ((Connection.Connected) connection).driver.getLocal(key);
-                WritableArray result = Arguments.createArray();
-                result.pushString("result");
-                result.pushString(value);
-                return result;
-            } else if (connection instanceof Connection.Waiting) {
-                throw new Exception("Waiting connection unexpected for unsafeGetLocalSynchronously");
-            }
-        } catch (Exception e) {
-            WritableArray result = Arguments.createArray();
-            result.pushString("error");
-            result.pushString(e.getMessage());
-            return result;
-        }
-        return null;
-    }
-
-    private List<Runnable> getQueue(int connectionTag) {
-        List<Runnable> queue;
-        if (connections.containsKey(connectionTag)) {
-            Connection connection = connections.get(connectionTag);
-            if (connection != null) {
-                queue = connection.getQueue();
-            } else {
-                queue = new ArrayList<>();
-            }
-        } else {
-            queue = new ArrayList<>();
-        }
-        return queue;
-    }
-
-    interface ParamFunction {
-        Object applyParamFunction(WMDatabaseDriver arg);
-    }
-
-    private void withDriver(final int tag, final Promise promise, final ParamFunction function, String functionName) {
-        try {
-            Trace.beginSection("WMDatabaseBridge." + functionName);
-            Connection connection = connections.get(tag);
-            if (connection == null) {
-                promise.reject(new Exception("No driver with tag " + tag + " available"));
-            } else if (connection instanceof Connection.Connected) {
-                Object result = function.applyParamFunction(((Connection.Connected) connection).driver);
-                promise.resolve(result == Void.TYPE ? true : result);
-            } else if (connection instanceof Connection.Waiting) {
-                // try again when driver is ready
-                connection.getQueue().add(() -> withDriver(tag, promise, function, functionName));
-                connections.put(tag, new Connection.Waiting(connection.getQueue()));
-            }
-        } catch (Exception e) {
-            promise.reject(functionName, e);
-        } finally {
-            Trace.endSection();
-        }
-    }
-
-
-    private void connectDriver(int connectionTag, WMDatabaseDriver driver, Promise promise) {
-        List<Runnable> queue = getQueue(connectionTag);
-        connections.put(connectionTag, new Connection.Connected(driver));
-
-        for (Runnable operation : queue) {
-            operation.run();
-        }
-        promise.resolve(true);
-    }
-
-    private void disconnectDriver(int connectionTag) {
-        List<Runnable> queue = getQueue(connectionTag);
-
-        connections.remove(connectionTag);
-
-        for (Runnable operation : queue) {
-            operation.run();
-        }
-    }
-
-    @ReactMethod
-    public void provideSyncJson(int id, String json, Promise promise) {
-        // Note: WatermelonJSI is optional on Android, but we don't want users to have to set up
-        // yet another NativeModule, so we're using Reflection to access it from here
-        try {
-            Class<?> clazz = Class.forName("com.nozbe.watermelondb.jsi.WatermelonJSI");
-            Method method = clazz.getDeclaredMethod("provideSyncJson", int.class, byte[].class);
-            method.invoke(null, id, json.getBytes());
+            Context context = getReactApplicationContext();
+            driver = new WMDatabaseDriver(context, dbName, new Schema(schema), false, encryptionKey);
             promise.resolve(true);
         } catch (Exception e) {
-            promise.reject(e);
+            promise.reject("setup_failed", e);
         }
     }
 
-    @ReactMethod(isBlockingSynchronousMethod = true)
-    public WritableArray getRandomBytes(int count) {
-        if (count != 256) {
-            throw new IllegalStateException("Expected getRandomBytes to be called with 256");
+    @ReactMethod
+    public void setUpWithMigrations(String dbName, ReadableMap migrations, String encryptionKey, Promise promise) {
+        try {
+            Context context = getReactApplicationContext();
+            driver = new WMDatabaseDriver(context, dbName, new MigrationSet(migrations), false, encryptionKey);
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("setup_failed", e);
         }
-
-        byte[] randomBytes = new byte[256];
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(randomBytes);
-
-        WritableArray result = Arguments.createArray();
-        for (byte value : randomBytes) {
-            result.pushInt(Byte.toUnsignedInt(value));
-        }
-        return result;
     }
 
-    @Override
-    public void invalidate() {
-        // NOTE: See Database::install() for explanation
-        super.invalidate();
-        reactContext.getCatalystInstance().getReactQueueConfiguration().getJSQueueThread().runOnQueue(() -> {
-            try {
-                Class<?> clazz = Class.forName("com.nozbe.watermelondb.jsi.WatermelonJSI");
-                Method method = clazz.getDeclaredMethod("onCatalystInstanceDestroy");
-                method.invoke(null);
-            } catch (Exception e) {
-                if (BuildConfig.DEBUG) {
-                    Logger logger = Logger.getLogger("DB_Bridge");
-                    logger.info("Could not find JSI onCatalystInstanceDestroy");
+    @ReactMethod
+    public void find(String table, String id, Promise promise) {
+        try {
+            Object result = driver.find(table, id);
+            promise.resolve(result != null ? (WritableArray) result : null);
+        } catch (Exception e) {
+            promise.reject("find_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void query(String table, String query, ReadableArray args, Promise promise) {
+        try {
+            Object[] queryArgs = new Object[args.size()];
+            for (int i = 0; i < args.size(); i++) {
+                switch (args.getType(i)) {
+                    case Null:
+                        queryArgs[i] = null;
+                        break;
+                    case Boolean:
+                        queryArgs[i] = args.getBoolean(i);
+                        break;
+                    case Number:
+                        queryArgs[i] = args.getDouble(i);
+                        break;
+                    case String:
+                        queryArgs[i] = args.getString(i);
+                        break;
                 }
             }
-        });
+            WritableArray results = driver.query(table, query, queryArgs);
+            promise.resolve(results);
+        } catch (Exception e) {
+            promise.reject("query_failed", e);
+        }
     }
 
-    @Deprecated
-    @Override
-    public void onCatalystInstanceDestroy() {
-        // NOTE: See Database::install() for explanation
-        super.onCatalystInstanceDestroy();
-        reactContext.getCatalystInstance().getReactQueueConfiguration().getJSQueueThread().runOnQueue(() -> {
-            try {
-                Class<?> clazz = Class.forName("com.nozbe.watermelondb.jsi.WatermelonJSI");
-                Method method = clazz.getDeclaredMethod("onCatalystInstanceDestroy");
-                method.invoke(null);
-            } catch (Exception e) {
-                if (BuildConfig.DEBUG) {
-                    Logger logger = Logger.getLogger("DB_Bridge");
-                    logger.info("Could not find JSI onCatalystInstanceDestroy");
+    @ReactMethod
+    public void count(String query, ReadableArray args, Promise promise) {
+        try {
+            Object[] queryArgs = new Object[args.size()];
+            for (int i = 0; i < args.size(); i++) {
+                switch (args.getType(i)) {
+                    case Null:
+                        queryArgs[i] = null;
+                        break;
+                    case Boolean:
+                        queryArgs[i] = args.getBoolean(i);
+                        break;
+                    case Number:
+                        queryArgs[i] = args.getDouble(i);
+                        break;
+                    case String:
+                        queryArgs[i] = args.getString(i);
+                        break;
                 }
             }
-        });
+            int count = driver.count(query, queryArgs);
+            promise.resolve(count);
+        } catch (Exception e) {
+            promise.reject("count_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void batch(ReadableArray operations, Promise promise) {
+        try {
+            driver.batch(operations);
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("batch_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void unsafeResetDatabase(Promise promise) {
+        try {
+            driver.unsafeResetDatabase();
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("reset_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void getLocal(String key, Promise promise) {
+        try {
+            String value = driver.getLocal(key);
+            promise.resolve(value);
+        } catch (Exception e) {
+            promise.reject("get_local_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void setLocal(String key, String value, Promise promise) {
+        try {
+            driver.setLocal(key, value);
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("set_local_failed", e);
+        }
+    }
+
+    @ReactMethod
+    public void removeLocal(String key, Promise promise) {
+        try {
+            driver.removeLocal(key);
+            promise.resolve(true);
+        } catch (Exception e) {
+            promise.reject("remove_local_failed", e);
+        }
+    }
+
+    private static class Connection {
+        public static class Connected {
+            public WMDatabaseDriver driver;
+
+            public Connected(WMDatabaseDriver driver) {
+                this.driver = driver;
+            }
+        }
+
+        public static class Waiting {
+            public List<Runnable> callbacks;
+
+            public Waiting(List<Runnable> callbacks) {
+                this.callbacks = callbacks;
+            }
+        }
+    }
+
+    private static class SchemaNeededError extends Exception {
+    }
+
+    private static class MigrationNeededError extends Exception {
+        public int databaseVersion;
+
+        public MigrationNeededError(int databaseVersion) {
+            this.databaseVersion = databaseVersion;
+        }
+    }
+
+    private static class MigrationSet {
+        public MigrationSet(ReadableMap migrations) {
+        }
+    }
+
+    private static class Schema {
+        public Schema(ReadableMap schema) {
+        }
     }
 }

@@ -5,10 +5,26 @@ namespace watermelondb {
 using platform::consoleError;
 using platform::consoleLog;
 
-Database::Database(jsi::Runtime *runtime, std::string path, bool usesExclusiveLocking) : runtime_(runtime), mutex_() {
+Database::Database(jsi::Runtime *runtime, std::string path, bool usesExclusiveLocking, std::string encryptionKey) : runtime_(runtime), mutex_() {
     db_ = std::make_unique<SqliteDb>(path);
 
     std::string initSql = "";
+
+    #ifdef SQLITE_HAS_CODEC
+    // Initialize encryption if key is provided
+    if (!encryptionKey.empty()) {
+        // Load SQLCipher
+        sqlite3_activate_see();
+        
+        // Configure SQLCipher
+        initSql += "PRAGMA key = '" + encryptionKey + "';";
+        initSql += "PRAGMA cipher_compatibility = 4;";
+        initSql += "PRAGMA cipher_page_size = 4096;";
+        initSql += "PRAGMA kdf_iter = 64000;";
+        initSql += "PRAGMA cipher_hmac_algorithm = HMAC_SHA512;";
+        initSql += "PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;";
+    }
+    #endif
 
     // FIXME: On Android, Watermelon often errors out on large batches with an IO error, because it
     // can't find a temp store... I tried setting sqlite3_temp_directory to /tmp/something, but that
@@ -113,6 +129,56 @@ void Database::migrate(jsi::String &migrationSql, int fromVersion, int toVersion
         executeMultiple(migrationSql.utf8(rt));
         setUserVersion(toVersion);
 
+        commit();
+    } catch (const std::exception &ex) {
+        rollback();
+        throw;
+    }
+}
+
+std::string Database::getFromLocalStorage(std::string key) {
+    std::string result;
+    const std::lock_guard<std::mutex> lock(mutex_);
+    sqlite3_stmt *statement;
+    int rc = sqlite3_prepare_v2(db_->sqlite, "SELECT value FROM local_storage WHERE key = ?", -1, &statement, 0);
+    if (rc != SQLITE_OK) {
+        throw jsi::JSError(getRt(), "Failed to prepare statement");
+    }
+    sqlite3_bind_text(statement, 1, key.c_str(), -1, SQLITE_STATIC);
+    rc = sqlite3_step(statement);
+    if (rc == SQLITE_ROW) {
+        result = reinterpret_cast<const char*>(sqlite3_column_text(statement, 0));
+    }
+    sqlite3_finalize(statement);
+    return result;
+}
+
+std::vector<std::string> Database::getAllTables() {
+    std::vector<std::string> allTables;
+    const std::lock_guard<std::mutex> lock(mutex_);
+    sqlite3_stmt *statement;
+    int rc = sqlite3_prepare_v2(db_->sqlite, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')", -1, &statement, 0);
+    if (rc != SQLITE_OK) {
+        throw jsi::JSError(getRt(), "Failed to prepare statement");
+    }
+    while ((rc = sqlite3_step(statement)) == SQLITE_ROW) {
+        allTables.push_back(reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)));
+    }
+    sqlite3_finalize(statement);
+    return allTables;
+}
+
+void Database::unsafeDestroyEverything() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    beginTransaction();
+    try {
+        for (const auto &tableName : getAllTables()) {
+            executeMultiple("DROP TABLE " + tableName);
+        }
+        executeMultiple("pragma writable_schema=1");
+        executeMultiple("delete from sqlite_master where type in ('table', 'index', 'trigger')");
+        executeMultiple("pragma user_version=0");
+        executeMultiple("pragma writable_schema=0");
         commit();
     } catch (const std::exception &ex) {
         rollback();

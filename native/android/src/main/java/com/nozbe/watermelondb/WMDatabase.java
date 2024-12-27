@@ -2,9 +2,10 @@ package com.nozbe.watermelondb;
 
 import android.content.Context;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteCursor;
 import android.database.sqlite.SQLiteDatabase;
-
+import net.sqlcipher.database.SQLiteDatabase as SQLCipherDatabase;
+import net.sqlcipher.database.SQLiteDatabaseHook;
+import android.database.sqlite.SQLiteOpenHelper;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -12,89 +13,110 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class WMDatabase {
-    private final SQLiteDatabase db;
+    private SQLiteDatabase db;
+    private SQLCipherDatabase encryptedDb;
+    private final Context context;
+    private final String name;
+    private final String encryptionKey;
+    private final boolean isEncrypted;
 
-    private WMDatabase(SQLiteDatabase db) {
-        this.db = db;
+    private static Map<String, WMDatabase> INSTANCES = new HashMap<>();
+
+    private WMDatabase(Context context, String name, String encryptionKey) {
+        this.context = context;
+        this.name = name;
+        this.encryptionKey = encryptionKey;
+        this.isEncrypted = encryptionKey != null && !encryptionKey.isEmpty();
+        
+        if (isEncrypted) {
+            SQLCipherDatabase.loadLibs(context);
+        }
+        
+        if (isEncrypted) {
+            String path = getDatabasePath();
+            encryptedDb = SQLCipherDatabase.openOrCreateDatabase(
+                path, 
+                encryptionKey,
+                null,
+                new SQLiteDatabaseHook() {
+                    @Override
+                    public void preKey(SQLCipherDatabase database) {}
+
+                    @Override
+                    public void postKey(SQLCipherDatabase database) {
+                        database.rawExecSQL("PRAGMA cipher_compatibility = 4");
+                        database.rawExecSQL("PRAGMA cipher_page_size = 4096");
+                        database.rawExecSQL("PRAGMA kdf_iter = 64000");
+                        database.rawExecSQL("PRAGMA cipher_hmac_algorithm = HMAC_SHA512");
+                        database.rawExecSQL("PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512");
+                    }
+                }
+            );
+            encryptedDb.enableWriteAheadLogging();
+        } else {
+            String path = getDatabasePath();
+            db = SQLiteDatabase.openDatabase(
+                path,
+                null,
+                SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
+            );
+        }
+        
+        initialize();
     }
-
-    public static Map<String, WMDatabase> INSTANCES = new HashMap<>();
 
     public static WMDatabase getInstance(String name, Context context) {
-        return getInstance(name, context, SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING);
+        return getInstance(name, context, null);
     }
 
-    public static WMDatabase getInstance(String name, Context context, int openFlags) {
+    public static WMDatabase getInstance(String name, Context context, String encryptionKey) {
         synchronized (WMDatabase.class) {
-            WMDatabase instance = INSTANCES.getOrDefault(name, null);
+            WMDatabase instance = INSTANCES.get(name);
             if (instance == null || !instance.isOpen()) {
-                WMDatabase database = buildDatabase(name, context, openFlags);
-                INSTANCES.put(name, database);
-                return database;
-            } else {
-                return instance;
+                instance = new WMDatabase(context, name, encryptionKey);
+                INSTANCES.put(name, instance);
             }
+            return instance;
         }
     }
 
-    public static WMDatabase buildDatabase(String name, Context context, int openFlags) {
-        SQLiteDatabase sqLiteDatabase = WMDatabase.createSQLiteDatabase(name, context, openFlags);
-        return new WMDatabase(sqLiteDatabase);
-    }
-
-    private static SQLiteDatabase createSQLiteDatabase(String name, Context context, int openFlags) {
-        String path;
+    private String getDatabasePath() {
         if (name.equals(":memory:") || name.contains("mode=memory")) {
             context.getCacheDir().delete();
-            path = new File(context.getCacheDir(), name).getPath();
+            return new File(context.getCacheDir(), name).getPath();
         } else {
-            // On some systems there is some kind of lock on `/databases` folder ¯\_(ツ)_/¯
-            path = context.getDatabasePath("" + name + ".db").getPath().replace("/databases", "");
+            return context.getDatabasePath("" + name + ".db").getPath().replace("/databases", "");
         }
-        return SQLiteDatabase.openDatabase(path, null, openFlags);
     }
 
-    public void setUserVersion(int version) {
-        db.setVersion(version);
-    }
-
-    public int getUserVersion() {
-        return db.getVersion();
-    }
-
-    public void unsafeExecuteStatements(String statements) {
-        this.transaction(() -> {
-            // NOTE: This must NEVER be allowed to take user input - split by `;` is not grammar-aware
-            // and so is unsafe. Only works with Watermelon-generated strings known to be safe
-            for (String statement : statements.split(";")) {
-                if (!statement.trim().isEmpty()) {
-                    this.execute(statement);
-                }
-            }
-        });
+    private void initialize() {
     }
 
     public void execute(String query, Object[] args) {
-        db.execSQL(query, args);
+        if (isEncrypted) {
+            encryptedDb.execSQL(query, args);
+        } else {
+            db.execSQL(query, args);
+        }
     }
 
     public void execute(String query) {
-        db.execSQL(query);
-    }
-
-    public void delete(String query, Object[] args) {
-        db.execSQL(query, args);
+        if (isEncrypted) {
+            encryptedDb.execSQL(query);
+        } else {
+            db.execSQL(query);
+        }
     }
 
     public Cursor rawQuery(String sql, Object[] args) {
-        // HACK: db.rawQuery only supports String args, and there's no clean way AFAIK to construct
-        // a query with arbitrary args (like with execSQL). However, we can misuse cursor factory
-        // to get the reference of a SQLiteQuery before it's executed
-        // https://github.com/aosp-mirror/platform_frameworks_base/blob/0799624dc7eb4b4641b4659af5b5ec4b9f80dd81/core/java/android/database/sqlite/SQLiteDirectCursorDriver.java#L30
-        // https://github.com/aosp-mirror/platform_frameworks_base/blob/0799624dc7eb4b4641b4659af5b5ec4b9f80dd81/core/java/android/database/sqlite/SQLiteProgram.java#L32
-        String[] rawArgs = new String[args.length];
-        Arrays.fill(rawArgs, "");
-        return db.rawQueryWithFactory(
+        if (isEncrypted) {
+            String[] stringArgs = new String[args.length];
+            for (int i = 0; i < args.length; i++) {
+                stringArgs[i] = args[i] != null ? args[i].toString() : null;
+            }
+            return encryptedDb.rawQuery(sql, stringArgs);
+        } else {
+            return db.rawQueryWithFactory(
                 (db1, driver, editTable, query) -> {
                     for (int i = 0; i < args.length; i++) {
                         Object arg = args[i];
@@ -110,87 +132,81 @@ public class WMDatabase {
                             throw new IllegalArgumentException("Bad query arg type: " + arg.getClass().getCanonicalName());
                         }
                     }
-                    return new SQLiteCursor(driver, editTable, query);
-                }, sql, rawArgs, null, null
-        );
+                    return new android.database.sqlite.SQLiteCursor(driver, editTable, query);
+                },
+                sql,
+                new String[args.length],
+                null,
+                null
+            );
+        }
     }
 
-    public Cursor rawQuery(String sql) {
-        return rawQuery(sql, new Object[] {});
+    public void transaction(Runnable function) {
+        if (isEncrypted) {
+            encryptedDb.beginTransaction();
+            try {
+                function.run();
+                encryptedDb.setTransactionSuccessful();
+            } finally {
+                encryptedDb.endTransaction();
+            }
+        } else {
+            db.beginTransaction();
+            try {
+                function.run();
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
+    public boolean isOpen() {
+        return isEncrypted ? (encryptedDb != null && encryptedDb.isOpen()) : (db != null && db.isOpen());
+    }
+
+    public void close() {
+        if (isEncrypted) {
+            if (encryptedDb != null && encryptedDb.isOpen()) {
+                encryptedDb.close();
+            }
+        } else {
+            if (db != null && db.isOpen()) {
+                db.close();
+            }
+        }
+    }
+
+    public boolean isInTransaction() {
+        return isEncrypted ? encryptedDb.inTransaction() : db.inTransaction();
+    }
+
+    public void setUserVersion(int version) {
+        execute("PRAGMA user_version = " + version);
+    }
+
+    public int getUserVersion() {
+        try (Cursor cursor = rawQuery("PRAGMA user_version", new Object[]{})) {
+            cursor.moveToFirst();
+            return cursor.getInt(0);
+        }
     }
 
     public int count(String query, Object[] args) {
         try (Cursor cursor = rawQuery(query, args)) {
             cursor.moveToFirst();
-            int columnIndex = cursor.getColumnIndex("count");
-            if (cursor.getCount() > 0) {
-                return cursor.getInt(columnIndex);
-            } else {
-                return 0;
-            }
+            return cursor.getInt(0);
         }
     }
 
-    public int count(String query) {
-        return this.count(query, new Object[]{});
-    }
-
-    public String getFromLocalStorage(String key) {
-        try (Cursor cursor = rawQuery(Queries.select_local_storage, new Object[]{key})) {
-            cursor.moveToFirst();
-            if (cursor.getCount() > 0) {
-                return cursor.getString(0);
-            } else {
-                return null;
+    public void unsafeExecuteStatements(String statements) {
+        transaction(() -> {
+            for (String statement : statements.split(";")) {
+                if (!statement.trim().isEmpty()) {
+                    execute(statement);
+                }
             }
-        }
-    }
-
-    private ArrayList<String> getAllTables() {
-        ArrayList<String> allTables = new ArrayList<>();
-        try (Cursor cursor = rawQuery(Queries.select_tables)) {
-            cursor.moveToFirst();
-            int nameIndex = cursor.getColumnIndex("name");
-            if (nameIndex > -1) {
-                do {
-                    allTables.add(cursor.getString(nameIndex));
-                } while (cursor.moveToNext());
-            }
-        }
-        return allTables;
-    }
-
-    public void unsafeDestroyEverything() {
-        this.transaction(() -> {
-            for (String tableName : getAllTables()) {
-                execute(Queries.dropTable(tableName));
-            }
-            execute("pragma writable_schema=1");
-            execute("delete from sqlite_master where type in ('table', 'index', 'trigger')");
-            execute("pragma user_version=0");
-            execute("pragma writable_schema=0");
         });
-    }
-
-    interface TransactionFunction {
-        void applyTransactionFunction();
-    }
-
-    public void transaction(TransactionFunction function) {
-        db.beginTransaction();
-        try {
-            function.applyTransactionFunction();
-            db.setTransactionSuccessful();
-        } finally {
-            db.endTransaction();
-        }
-    }
-
-    public Boolean isOpen() {
-        return db.isOpen();
-    }
-
-    public void close() {
-        db.close();
     }
 }

@@ -4,7 +4,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+
+#ifdef SQLITE_HAS_CODEC
+#include <sqlcipher/sqlite3.h>
+#else
 #include <sqlite3.h>
+#endif
 
 // FIXME: Make these paths consistent across platforms
 #if __ANDROID__
@@ -26,7 +31,7 @@ namespace watermelondb {
 class Database : public jsi::HostObject {
 public:
     static void install(jsi::Runtime *runtime);
-    Database(jsi::Runtime *runtime, std::string path, bool usesExclusiveLocking);
+    Database(jsi::Runtime *runtime, std::string path, bool usesExclusiveLocking = false, std::string encryptionKey = "");
     ~Database();
     void destroy();
 
@@ -80,6 +85,9 @@ private:
     bool isCached(std::string cacheKey);
     void markAsCached(std::string cacheKey);
     void removeFromCache(std::string cacheKey);
+    std::string getFromLocalStorage(std::string key);
+    std::vector<std::string> getAllTables();
+    void unsafeDestroyEverything();
 };
 
 inline std::string cacheKey(std::string tableName, std::string recordId) {
