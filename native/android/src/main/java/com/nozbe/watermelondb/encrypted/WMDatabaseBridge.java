@@ -2,6 +2,7 @@ package com.nozbe.watermelondb.encrypted;
 
 import android.content.Context;
 import android.database.Cursor;
+import androidx.annotation.NonNull;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;

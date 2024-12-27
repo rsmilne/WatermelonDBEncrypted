@@ -19,4 +19,15 @@ public class Schema {
     public ReadableMap getSchemaVersion() {
         return schemaVersion;
     }
+
+    public String getSql() {
+        StringBuilder sql = new StringBuilder();
+        for (int i = 0; i < tables.size(); i++) {
+            ReadableMap table = tables.getMap(i);
+            if (table.hasKey("sql")) {
+                sql.append(table.getString("sql")).append(";");
+            }
+        }
+        return sql.toString();
+    }
 }

@@ -1,20 +1,15 @@
-package com.nozbe.watermelondb;
+package com.nozbe.watermelondb.encrypted;
 
-import java.util.ArrayList;
-
-public abstract class Connection {
-    public static class Connected extends Connection {
+public class Connection {
+    public static class Connected {
         public final WMDatabaseDriver driver;
+
         public Connected(WMDatabaseDriver driver) {
             this.driver = driver;
         }
     }
 
-    public static class Waiting extends Connection {
-        public final ArrayList<Runnable> queueInWaiting;
-        public Waiting(ArrayList<Runnable> queueInWaiting) {
-            this.queueInWaiting = queueInWaiting;
-        }
+    public static class Disconnected {
     }
 
     public ArrayList<Runnable> getQueue() {
